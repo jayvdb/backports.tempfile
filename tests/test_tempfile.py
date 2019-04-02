@@ -4,10 +4,12 @@ Partial backport of Python 3.5's test.test_tempfile:
     TestLowLevelInternals
     BaseTestCase
     TestNamedTemporaryFile
+    TestTemporaryFile
     TestTemporaryDirectory
 
 Backport modifications are marked with "XXX backport".
 """
+# XXX backport: TODO: These do not test for unicode vs. str/bytes under Python < 3.
 
 import tempfile as _tempfile
 import errno
@@ -40,6 +42,7 @@ if PY3:
 _ResourceWarning = RuntimeWarning if sys.version_info < (3, 2) else ResourceWarning
 
 
+# XXX backport str -> unicode throughout class
 class TestLowLevelInternals(unittest.TestCase):
     def test_infer_return_type_singles(self):
         self.assertIs(unicode, tempfile._infer_return_type(u''))
@@ -93,8 +96,6 @@ class BaseTestCase(unittest.TestCase):
         npre  = nbase[:len(pre)]
         nsuf  = nbase[len(nbase)-len(suf):]
 
-        # XXX backport: TODO: These do not test for unicode vs. str/bytes under Python < 3.
-        # XXX backport: TODO: Enable unicode_literals and make these pass?
         if dir is not None:
             self.assertIs(type(name), unicode if type(dir) is unicode else bytes,
                           "unexpected return type")
@@ -130,7 +131,9 @@ class TestNamedTemporaryFile(BaseTestCase):
 
     def do_create(self, dir=None, pre=u"", suf=u"", delete=True):
         if dir is None:
-            dir = tempfile.gettempdir()
+            # XXX backport this is using the backports _gettempdir
+            # to avoid mixing unicode and bytes args
+            dir = tempfile._gettempdir()
         file = tempfile.NamedTemporaryFile(dir=dir, prefix=pre, suffix=suf,
                                            delete=delete)
 
@@ -249,6 +252,68 @@ class TestNamedTemporaryFile(BaseTestCase):
         self.assertEqual(os.listdir(dir), [])
 
     # How to test the mode and bufsize parameters?
+
+
+if tempfile.NamedTemporaryFile is not tempfile.TemporaryFile:
+
+    class TestTemporaryFile(BaseTestCase):
+        """Test TemporaryFile()."""
+
+        def test_basic(self):
+            # TemporaryFile can create files
+            # No point in testing the name params - the file has no name.
+            tempfile.TemporaryFile()
+
+        def test_has_no_name(self):
+            # TemporaryFile creates files with no names (on this system)
+            dir = _tempfile.mkdtemp()
+            f = tempfile.TemporaryFile(dir=dir)
+            f.write(b'blat')
+
+            # Sneaky: because this file has no name, it should not prevent
+            # us from removing the directory it was created in.
+            try:
+                os.rmdir(dir)
+            except:
+                # cleanup
+                f.close()
+                os.rmdir(dir)
+                raise
+
+        def test_multiple_close(self):
+            # A TemporaryFile can be closed many times without error
+            f = tempfile.TemporaryFile()
+            f.write(b'abc\n')
+            f.close()
+            f.close()
+            f.close()
+
+        # How to test the mode and bufsize parameters?
+        def test_mode_and_encoding(self):
+
+            def roundtrip(input, *args, **kwargs):
+                with tempfile.TemporaryFile(*args, **kwargs) as fileobj:
+                    fileobj.write(input)
+                    fileobj.seek(0)
+                    self.assertEqual(input, fileobj.read())
+
+            roundtrip(b"1234", "w+b")
+            roundtrip(u"abdc\n", "w+")
+            roundtrip(u"\u039B", "w+", encoding="utf-16")
+            roundtrip(u"foo\r\n", "w+", newline="")
+
+        def test_no_leak_fd(self):
+            # Issue #21058: don't leak file descriptor when io.open() fails
+            closed = []
+            os_close = os.close
+            def close(fd):
+                closed.append(fd)
+                os_close(fd)
+
+            with mock.patch('os.close', side_effect=close):
+                with mock.patch('io.open', side_effect=ValueError):
+                    self.assertRaises(ValueError, tempfile.TemporaryFile)
+                    self.assertEqual(len(closed), 1)
 
 
 class TestTemporaryDirectory(BaseTestCase):

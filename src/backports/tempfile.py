@@ -1,11 +1,15 @@
 """
-Partial backport of Python 3.5's tempfile module:
+Partial backport of Python 3.7's tempfile module:
 
     _infer_return_type
     _sanitize_params
     _TemporaryFileCloser
     _TemporaryFileWrapper
     NamedTemporaryFile
+    TemporaryFile
+
+Partial backport of Python 3.5's tempfile module:
+
     TemporaryDirectory
 
 Backport modifications are marked with marked with "XXX backport".
@@ -20,6 +24,13 @@ import warnings as _warnings
 from shutil import rmtree as _rmtree
 
 from backports.weakref import finalize
+
+from tempfile import (
+    _mkstemp_inner as __mkstemp_inner,
+    _bin_openflags as __bin_openflags,
+    TMP_MAX as _TMP_MAX,
+)
+
 # Do not use backports.os fsencode as it is too unreliable on
 # all OS at the moment.  Better for this tempdir backport to
 # clearly not support complex filenames until the os backport
@@ -30,13 +41,32 @@ try:
 except ImportError:
     _fsencode = None
 
-from tempfile import (
-    gettempdir as gettempdirb,
-    _get_candidate_names,
-    _text_openflags,
-    _bin_openflags,
-    TMP_MAX,
-)
+try:
+    from tempfile import gettempdirb as _gettempdirb
+    from tempfile import gettempdir as _gettempdir
+except ImportError:
+    # XXX backport this gettempdir may not be binary, but we should
+    # not trust it before 3.5
+    from tempfile import gettempdir as _gettempdirb
+
+    def _gettempdir():
+        tempdir_ = _gettempdirb()
+        # XXX backport very basic approach for using native gettempdirb
+        # to implement unicode gettempdir using _fsdecode.
+        # However this is unlikely to be used, at least in CPython,
+        # as gettempdirb and fsdecode were both introduced in 3.5
+        if _fsencode:
+            try:
+                return _fsdecode(tempdir_)
+            except:
+                return tempdir_
+
+        # XXX backport very basic approach for returning unicode
+        try:
+            return unicode(tempdir_)
+        except:
+            return tempdir_
+
 
 if sys.version_info[0] == 3:
     _PY3 = True
@@ -46,35 +76,11 @@ else:
 if _PY3:
     unicode = str
 
-"""
-_text_openflags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL
-if hasattr(_os, 'O_NOFOLLOW'):
-    _text_openflags |= _os.O_NOFOLLOW
-
-_bin_openflags = _text_openflags
-if hasattr(_os, 'O_BINARY'):
-    _bin_openflags |= _os.O_BINARY
-
-if hasattr(_os, 'TMP_MAX'):
-    TMP_MAX = _os.TMP_MAX
-else:
-    TMP_MAX = 1000
-"""
-
 # This variable _was_ unused for legacy reasons, see issue 10354.
 # But as of 3.5 we actually use it at runtime so changing it would
 # have a possibly desirable side effect...  But we do not want to support
 # that as an API.  It is undocumented on purpose.  Do not depend on this.
 template = u"tmp"
-
-
-def gettempdir():
-    tempdir_ = gettempdirb()
-    # XXX very basic approach for returning unicode
-    try:
-        return unicode(tempdir_)
-    except:
-        return tempdir_
 
 
 def _infer_return_type(*args):
@@ -84,7 +90,8 @@ def _infer_return_type(*args):
         if arg is None:
             continue
         if isinstance(arg, bytes):
-            if return_type and return_type is not bytes:
+            # XXX backport str -> unicode
+            if return_type is unicode:
                 raise TypeError("Can't mix bytes and non-bytes in "
                                 "path components.")
             return_type = bytes
@@ -92,8 +99,10 @@ def _infer_return_type(*args):
             if return_type is bytes:
                 raise TypeError("Can't mix bytes and non-bytes in "
                                 "path components.")
+            # XXX backport str -> unicode
             return_type = unicode
     if return_type is None:
+        # XXX backport str -> unicode
         return unicode  # tempfile APIs return a unicode by default.
     return return_type
 
@@ -107,43 +116,18 @@ def _sanitize_params(prefix, suffix, dir):
         if output_type is unicode:
             prefix = template
         else:
-            prefix = bytes(template)
-    if dir is None:
-        if output_type is unicode:
-            dir = gettempdir()
-        else:
-            dir = gettempdirb()
-    return prefix, suffix, dir, output_type
-
-
-def _mkstemp_inner(dir, pre, suf, flags, output_type):
-    """Code common to mkstemp, TemporaryFile, and NamedTemporaryFile."""
-
-    names = _get_candidate_names()
-    # Using backports.os.fsencode here fails badly on all platforms,
-    # going into an infinite loop.
-    if _fsencode and output_type is bytes:
-        names = map(_fsencode, names)
-
-    for seq in range(TMP_MAX):
-        name = next(names)
-        file = _os.path.join(dir, pre + name + suf)
-        try:
-            fd = _os.open(file, flags, 0o600)
-        except FileExistsError:
-            continue    # try again
-        except PermissionError:
-            # This exception is thrown when a directory with the chosen name
-            # already exists on windows.
-            if (_os.name == 'nt' and _os.path.isdir(dir) and
-                _os.access(dir, _os.W_OK)):
-                continue
+            # XXX backport os.fsencode -> bytes where os.fsencode is missing
+            if _fsencode:
+                prefix = _fsencode(template)
             else:
-                raise
-        return (fd, _os.path.abspath(file))
-
-    raise FileExistsError(_errno.EEXIST,
-                          "No usable temporary file name found")
+                prefix = bytes(template)
+    if dir is None:
+        # XXX backport str -> unicode
+        if output_type is unicode:
+            dir = _gettempdir()
+        else:
+            dir = _gettempdirb()
+    return prefix, suffix, dir, output_type
 
 
 # XXX backport:  Rather than backporting all of mkdtemp(), we just create a
@@ -295,14 +279,20 @@ def NamedTemporaryFile(mode='w+b', buffering=-1, encoding=None,
 
     prefix, suffix, dir, output_type = _sanitize_params(prefix, suffix, dir)
 
-    flags = _bin_openflags
+    flags = __bin_openflags
 
     # Setting O_TEMPORARY in the flags causes the OS to delete
     # the file when it is closed.  This is only supported by Windows.
     if _os.name == 'nt' and delete:
         flags |= _os.O_TEMPORARY
 
-    (fd, name) = _mkstemp_inner(dir, prefix, suffix, flags, output_type)
+    # XXX: Try using output_type if it exists, otherwise fall back to
+    # prior signature
+    try:
+        (fd, name) = __mkstemp_inner(dir, prefix, suffix, flags, output_type)
+    except TypeError:
+        (fd, name) = __mkstemp_inner(dir, prefix, suffix, flags)
+
     try:
         file = _io.open(fd, mode, buffering=buffering,
                         newline=newline, encoding=encoding)
@@ -312,6 +302,79 @@ def NamedTemporaryFile(mode='w+b', buffering=-1, encoding=None,
         _os.unlink(name)
         _os.close(fd)
         raise
+
+
+if _os.name != 'posix' or _os.sys.platform == 'cygwin':
+    # On non-POSIX and Cygwin systems, assume that we cannot unlink a file
+    # while it is open.
+    TemporaryFile = NamedTemporaryFile
+
+else:
+    # Is the O_TMPFILE flag available and does it work?
+    # The flag is set to False if os.open(dir, os.O_TMPFILE) raises an
+    # IsADirectoryError exception
+    _O_TMPFILE_WORKS = hasattr(_os, 'O_TMPFILE')
+
+    def TemporaryFile(mode='w+b', buffering=-1, encoding=None,
+                      newline=None, suffix=None, prefix=None,
+                      dir=None):
+        """Create and return a temporary file.
+        Arguments:
+        'prefix', 'suffix', 'dir' -- as for mkstemp.
+        'mode' -- the mode argument to io.open (default "w+b").
+        'buffering' -- the buffer size argument to io.open (default -1).
+        'encoding' -- the encoding argument to io.open (default None)
+        'newline' -- the newline argument to io.open (default None)
+        The file is created as mkstemp() would do it.
+
+        Returns an object with a file-like interface.  The file has no
+        name, and will cease to exist when it is closed.
+        """
+        global _O_TMPFILE_WORKS
+
+        prefix, suffix, dir, output_type = _sanitize_params(prefix, suffix, dir)
+
+        flags = __bin_openflags
+        if _O_TMPFILE_WORKS:
+            try:
+                flags2 = (flags | _os.O_TMPFILE) & ~_os.O_CREAT
+                fd = _os.open(dir, flags2, 0o600)
+            except IsADirectoryError:
+                # Linux kernel older than 3.11 ignores the O_TMPFILE flag:
+                # O_TMPFILE is read as O_DIRECTORY. Trying to open a directory
+                # with O_RDWR|O_DIRECTORY fails with IsADirectoryError, a
+                # directory cannot be open to write. Set flag to False to not
+                # try again.
+                _O_TMPFILE_WORKS = False
+            except OSError:
+                # The filesystem of the directory does not support O_TMPFILE.
+                # For example, OSError(95, 'Operation not supported').
+                #
+                # On Linux kernel older than 3.11, trying to open a regular
+                # file (or a symbolic link to a regular file) with O_TMPFILE
+                # fails with NotADirectoryError, because O_TMPFILE is read as
+                # O_DIRECTORY.
+                pass
+            else:
+                try:
+                    return _io.open(fd, mode, buffering=buffering,
+                                    newline=newline, encoding=encoding)
+                except:
+                    _os.close(fd)
+                    raise
+            # Fallback to _mkstemp_inner().
+
+        try:
+            (fd, name) = __mkstemp_inner(dir, prefix, suffix, flags, output_type)
+        except TypeError:
+            (fd, name) = __mkstemp_inner(dir, prefix, suffix, flags)
+        try:
+            _os.unlink(name)
+            return _io.open(fd, mode, buffering=buffering,
+                            newline=newline, encoding=encoding)
+        except:
+            _os.close(fd)
+            raise
 
 
 class TemporaryDirectory(object):
