@@ -22,6 +22,7 @@ from shutil import rmtree as _rmtree
 
 from backports.weakref import finalize
 
+
 from tempfile import (
     _mkstemp_inner as __mkstemp_inner,
     _bin_openflags as __bin_openflags,
@@ -34,9 +35,9 @@ from tempfile import (
 # is more mature, except where the native os module provides
 # the necessary support.
 try:
-    from os import fsencode as _fsencode
+    from os import fsencode as _fsencode, fsdecode as _fsdecode
 except ImportError:
-    _fsencode = None
+    from backports.os import fsencode as _fsencode, fsdecode as _fsdecode
 
 try:
     from tempfile import gettempdirb as _gettempdirb
@@ -52,7 +53,7 @@ except ImportError:
         # to implement unicode gettempdir using _fsdecode.
         # However this is unlikely to be used, at least in CPython,
         # as gettempdirb and fsdecode were both introduced in 3.5
-        if _fsencode:
+        if _fsdecode:
             try:
                 return _fsdecode(tempdir_)
             except:
