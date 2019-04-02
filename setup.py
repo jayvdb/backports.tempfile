@@ -23,6 +23,7 @@ setup(
     use_scm_version=True,
 
     install_requires=[
+        'backports.os',
         'backports.weakref',
     ],
 
