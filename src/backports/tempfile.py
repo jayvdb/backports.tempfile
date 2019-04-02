@@ -30,7 +30,13 @@ try:
 except ImportError:
     _fsencode = None
 
-from tempfile import gettempdir as gettempdirb, _get_candidate_names
+from tempfile import (
+    gettempdir as gettempdirb,
+    _get_candidate_names,
+    _text_openflags,
+    _bin_openflags,
+    TMP_MAX,
+)
 
 if sys.version_info[0] == 3:
     _PY3 = True
@@ -40,7 +46,7 @@ else:
 if _PY3:
     unicode = str
 
-
+"""
 _text_openflags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL
 if hasattr(_os, 'O_NOFOLLOW'):
     _text_openflags |= _os.O_NOFOLLOW
@@ -53,6 +59,7 @@ if hasattr(_os, 'TMP_MAX'):
     TMP_MAX = _os.TMP_MAX
 else:
     TMP_MAX = 1000
+"""
 
 # This variable _was_ unused for legacy reasons, see issue 10354.
 # But as of 3.5 we actually use it at runtime so changing it would
